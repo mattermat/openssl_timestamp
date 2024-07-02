@@ -84,46 +84,38 @@ static int init_socket(const char *host, const char *path)
 
 struct my_bio_data {
     int sockfd;
-    SSL *ssl;
-    BIO *next_bio;
 };
+
 void init_SSL(void)
 {
     SSL_library_init();
     SSL_load_error_strings();
-   // ERR_load_BIO_strings();
 }
 
-int my_bio_write(BIO *bio, const char *buffer, size_t len, size_t *written_bytes)
+int my_bio_write(BIO *bio, const char *buffer, int len)
 {
-    printf("bio buffer: %s\n", buffer);
+    printf("    inside bio write\n");
     struct my_bio_data *data = (struct my_bio_data *) BIO_get_data(bio);
     int written = write(data->sockfd, buffer, len);
-    printf("inside bio, written %i bytes\n", written);
     return written;
 }
 
-int my_bio_read(BIO *bio, char *buffer, size_t len, size_t *read_bytes)
+int my_bio_read(BIO *bio, char *buffer, int len)
 {
+    printf("    inside bio read\n");
     struct my_bio_data *data = (struct my_bio_data *) BIO_get_data(bio);
-    /*
-    struct msghdr msghdr;
-    int hdr_bytes = recvmsg(data->sockfd, &msghdr, MSG_PEEK);
-    printf("hdr bytes: %i\n", hdr_bytes);
-    return hdr_bytes;
-    */
-    int response_len1 = read(data->sockfd, buffer, len);
-    int written = BIO_write(bio, buffer, response_len1);
-    printf("response len: %i, written: %i\n", response_len1, written);
-    return written;
+    int response_len = read(data->sockfd, buffer, len);
+    return response_len;
 }
 
 BIO_METHOD *BIO_my_bio_new(void)
 {
     BIO_METHOD *_my_bio_method;
     _my_bio_method = BIO_meth_new(BIO_get_new_index() | BIO_TYPE_SOURCE_SINK, "BIO timestamping");
-    BIO_meth_set_read_ex(_my_bio_method, my_bio_read);
-    BIO_meth_set_write_ex(_my_bio_method, my_bio_write);
+
+    BIO_meth_set_read(_my_bio_method, my_bio_read);
+    BIO_meth_set_write(_my_bio_method, my_bio_write);
+
     return _my_bio_method;
 }
 
@@ -138,10 +130,10 @@ void BIO_my_bio_free(BIO_METHOD *my_bio_method)
 
 int main()
 {
-    printf("version: %s\n", SSLeay_version(SSLEAY_VERSION));
+    //printf("Openssl Version: %s\n", OpenSSL_version(OPENSSL_VERSION));
     signal(SIGSEGV, backtrace_handler);
-    char *host = "echo.free.beeceptor.com";
-    //char *host = "google.com";
+    //char *host = "echo.free.beeceptor.com";
+    char *host = "google.com";
     char *path = "/";
     int sockfd = init_socket(host, path);
 
@@ -165,18 +157,9 @@ int main()
     // Connect SSL over the socket
     SSL *ssl = SSL_new(ssl_ctx);
     SSL_set_tlsext_host_name(ssl, host);
-    //SSL_set_fd(ssl, sockfd);
 
-    // Create new BIO and set it
-    struct my_bio_data *bio_data = malloc(sizeof(struct my_bio_data));
-    BIO *my_bio = BIO_new(BIO_my_bio_new());
-    SSL_set_bio(ssl, NULL, NULL);
-    //SSL_set_bio(ssl, my_bio, my_bio);
-    SSL_set_connect_state(ssl);
-
+    SSL_set_fd(ssl, sockfd);
     int ret = SSL_connect(ssl);
-    printf("ret: %i\n", ret);
-
     if (ret != 1) {
         PRINTERR();
         int ssl_err_reason = SSL_get_error(ssl, ret);
@@ -227,35 +210,40 @@ int main()
         }
     }
 
-    /* handhsake */
+    // Create new BIO and set it
+    struct my_bio_data *bio_data = malloc(sizeof(struct my_bio_data));
+    BIO *my_bio = BIO_new(BIO_my_bio_new());
+    bio_data->sockfd = sockfd;
+    BIO_set_data(my_bio, bio_data);
+    SSL_set_bio(ssl, my_bio, my_bio);
+
     char request[1024];
     int request_len;
     char response[1024];
     int response_len;
 
-    // Prepare the WebSocket handshake request
     request_len = sprintf(request, "GET %s HTTP/1.1\r\n"
                                    "Host: %s\r\n\r\n",
                                    path, host);
 
+    printf("  before write (%i)\n", request_len);
     int written = SSL_write(ssl, request, request_len);
-    printf("written: %i\n", written);
     if (written < 0) {
         PRINTERR();
-        printf("errore\n");
         return -1;
     }
-    printf("\n\n\n2\n");
-    printf("written\n");
-
+    printf("  after write\n");
+    printf("\n");
+    printf("  before read\n");
     response_len = SSL_read(ssl, response, sizeof(response));
     if (response_len < 0) {
         PRINTERR();
         return -1;
     }
+    printf("  after read\n");
+    printf("\n");
     printf("response from the server [%i]:\n%s\n", response_len, response);
 }
-
 
 int recv_timestamp(int sockfd)
 {

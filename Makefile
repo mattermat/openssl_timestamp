@@ -1,10 +1,8 @@
 main: main.o
-	gcc main.o -o main -L/usr/local/lib64/ -lssl -lcrypto
-#	gcc -I/usr/local/include/ -lopenssl main.o -o main
-#	gcc main.o -o main -I/usr/local/include/ -L/usr/local/lib64/ -lopenssl
+	gcc main.o -o main -I/usr/local/ssl/include -L/usr/local/ssl/lib64 -Wl,-rpath,/usr/local/lib64 -lssl -lcrypto
 
 main.o: main.c
-	gcc -c main.c -std=gnu11
+	gcc -c main.c -std=gnu11 -I/usr/local/ssl/include -L/usr/local/ssl/lib64
 
 clean:
 	rm main main.o

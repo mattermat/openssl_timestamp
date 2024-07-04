@@ -3,6 +3,7 @@
         "socket.h": "c",
         "bio.h": "c",
         "unistd.h": "c",
-        "err.h": "c"
+        "err.h": "c",
+        "ssl.h": "c"
     }
 }

@@ -12,6 +12,10 @@
 #include <execinfo.h>
 #include <unistd.h>
 
+#include <sys/ioctl.h>
+#include <linux/sockios.h>
+#include <net/if.h>
+
 #define PRINTERR() fprintf(stderr, "%s:L%i: error\n", __FILE__, __LINE__)
 
 
@@ -42,7 +46,7 @@ static int init_socket(const char *host, const char *path)
     struct addrinfo hints;
     struct addrinfo  *result, *rp;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET; //PF_UNSPEC; 
+    hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags |= AI_CANONNAME;
 
@@ -55,15 +59,11 @@ static int init_socket(const char *host, const char *path)
 
     int sockfd = -1;
     for (rp = result; rp != NULL; rp = rp->ai_next) {
-        #if 0
-        client->sockfd = socket(rp->ai_family, rp->ai_socktype | SOCK_NONBLOCK, rp->ai_protocol);
-        #else
-        // NOTE: development
         sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        #endif
         if (sockfd < 0) {
             continue;
         }
+
         int connected = -1;
         connected = connect(sockfd, rp->ai_addr, rp->ai_addrlen);
         if (connected == -1) {
@@ -71,13 +71,14 @@ static int init_socket(const char *host, const char *path)
             continue;
         }
         break;
-
     }
     freeaddrinfo(result);
 
+/*
     int enable = SOF_TIMESTAMPING_RX_HARDWARE | SOF_TIMESTAMPING_RAW_HARDWARE 
                 |SOF_TIMESTAMPING_SYS_HARDWARE | SOF_TIMESTAMPING_SOFTWARE;
     setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPING, &enable, sizeof(int));
+*/
 
     return sockfd;
 }
@@ -100,11 +101,101 @@ int my_bio_write(BIO *bio, const char *buffer, int len)
     return written;
 }
 
+void check_socket_options(int sockfd) {
+    int current_flags;
+    socklen_t len = sizeof(current_flags);
+    if (getsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPING, &current_flags, &len) == -1) {
+        perror("getsockopt failed");
+    } else {
+        printf("Current SO_TIMESTAMPING flags: 0x%x\n", current_flags);
+    }
+}
+
 int my_bio_read(BIO *bio, char *buffer, int len)
 {
     printf("    inside bio read\n");
     struct my_bio_data *data = (struct my_bio_data *) BIO_get_data(bio);
+    check_socket_options(data->sockfd);
+
+    struct msghdr msg;
+    struct iovec iov;
+    iov.iov_base = buffer;
+    iov.iov_len = 2048;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    char control[1024];
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+    // we use the MSG_PEEK flag to make possible to read actual data with read()
+    int got = recvmsg(data->sockfd, &msg, MSG_PEEK);
+
+    printf("got: %i\n", got);
+    if (got > -1)
+    {
+        struct timespec* ts = NULL;
+        struct cmsghdr* cmsg;
+
+        for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SO_TIMESTAMPING) {
+                struct timespec *timestamps = (struct timespec *)CMSG_DATA(cmsg);
+                printf("SW timestamp: %ld.%09ld\n", timestamps[0].tv_sec, timestamps[0].tv_nsec);
+                printf("HW timestamp: %ld.%09ld\n", timestamps[2].tv_sec, timestamps[2].tv_nsec);
+            } else if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SO_TIMESTAMPNS) {
+                struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
+                printf("SO_TIMESTAMPNS: %ld.%09ld\n", ts->tv_sec, ts->tv_nsec);
+            }
+        }
+
+#if 0
+        for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+            printf("Processing cmsg\n");
+            if (cmsg->cmsg_level != SOL_SOCKET)
+                continue;
+
+            switch(cmsg->cmsg_type) {
+                case SO_TIMESTAMPNS:
+                    ts = (struct timespec*) CMSG_DATA(cmsg);
+                    printf("SO_TIMESTAMPNS: %ld.%09ld\n", (long)ts->tv_sec, (long)ts->tv_nsec);
+                    break;
+                case SO_TIMESTAMPING:
+                    ts = (struct timespec*) CMSG_DATA(cmsg);
+                    printf("SO_TIMESTAMPING: %ld.%09ld\n", (long)ts[2].tv_sec, (long)ts[2].tv_nsec);
+                    break;
+                default:
+                    printf("Unhandled cmsg type: %d\n", cmsg->cmsg_type);
+                    break;
+            }
+        }
+#endif
+
+#if 0
+        for( cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg) ) {
+            printf("ok\n");
+            if( cmsg->cmsg_level != SOL_SOCKET )
+            continue;
+
+            switch( cmsg->cmsg_type ) {
+            case SO_TIMESTAMPNS:
+            ts = (struct timespec*) CMSG_DATA(cmsg);
+            printf("HW TIMESTAMP %ld.%09ld\n", (long)ts[2].tv_sec, (long)ts[2].tv_nsec);
+            break;
+            case SO_TIMESTAMPING:
+            ts = (struct timespec*) CMSG_DATA(cmsg);
+            printf("HW TIMESTAMP %ld.%09ld\n", (long)ts[2].tv_sec, (long)ts[2].tv_nsec);
+            break;
+            default:
+            /* Ignore other cmsg options */
+            break;
+            }
+        }
+#endif
+
+    } else {
+        printf("errno: %i\n", errno);
+    }
+
     int response_len = read(data->sockfd, buffer, len);
+    //printf("red buffer: %s\n", buffer);
     return response_len;
 }
 
@@ -128,14 +219,48 @@ void BIO_my_bio_free(BIO_METHOD *my_bio_method)
     my_bio_method = NULL;
 }
 
+int enable_hw_timestamping(int sockfd, const char *interface_name) {
+    struct ifreq ifr;
+    struct hwtstamp_config hwconfig;
+
+    memset(&ifr, 0, sizeof(ifr));
+    memset(&hwconfig, 0, sizeof(hwconfig));
+
+    // Set the interface name
+    strncpy(ifr.ifr_name, interface_name, IFNAMSIZ - 1);
+
+    // Set the hardware timestamping config
+    hwconfig.tx_type = HWTSTAMP_TX_ON;
+    hwconfig.rx_filter = HWTSTAMP_FILTER_ALL;
+
+    ifr.ifr_data = (void *)&hwconfig;
+
+    // Apply the configuration
+    if (ioctl(sockfd, SIOCSHWTSTAMP, &ifr) < 0) {
+        perror("ioctl SIOCSHWTSTAMP failed");
+        return -1;
+    }
+
+    return 0;
+}
+
 int main()
 {
     //printf("Openssl Version: %s\n", OpenSSL_version(OPENSSL_VERSION));
+
     signal(SIGSEGV, backtrace_handler);
+
     //char *host = "echo.free.beeceptor.com";
     char *host = "google.com";
     char *path = "/";
     int sockfd = init_socket(host, path);
+
+    // enable timestamp
+    enable_hw_timestamping(sockfd, "wlp3s0"); // operation not permitted on my laptop
+
+    int flags = SOF_TIMESTAMPING_RX_HARDWARE | SOF_TIMESTAMPING_RAW_HARDWARE |
+                 SOF_TIMESTAMPING_SYS_HARDWARE | SOF_TIMESTAMPING_SOFTWARE;
+    int r = setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPING, &flags, sizeof(flags));
 
     // Initialize SSL library
     init_SSL();

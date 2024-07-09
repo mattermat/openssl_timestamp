@@ -74,12 +74,6 @@ static int init_socket(const char *host, const char *path)
     }
     freeaddrinfo(result);
 
-/*
-    int enable = SOF_TIMESTAMPING_RX_HARDWARE | SOF_TIMESTAMPING_RAW_HARDWARE 
-                |SOF_TIMESTAMPING_SYS_HARDWARE | SOF_TIMESTAMPING_SOFTWARE;
-    setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPING, &enable, sizeof(int));
-*/
-
     return sockfd;
 }
 
@@ -138,57 +132,14 @@ int my_bio_read(BIO *bio, char *buffer, int len)
         for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
             if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SO_TIMESTAMPING) {
                 struct timespec *timestamps = (struct timespec *)CMSG_DATA(cmsg);
-                printf("SW timestamp: %ld.%09ld\n", timestamps[0].tv_sec, timestamps[0].tv_nsec);
-                printf("HW timestamp: %ld.%09ld\n", timestamps[2].tv_sec, timestamps[2].tv_nsec);
+                printf("SW timestamp:      %ld.%09ld\n", timestamps[0].tv_sec, timestamps[0].tv_nsec);
+                printf("HW timestamp:      %ld.%09ld\n", timestamps[2].tv_sec, timestamps[2].tv_nsec);
             } else if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SO_TIMESTAMPNS) {
-                struct timespec *ts = (struct timespec *)CMSG_DATA(cmsg);
-                printf("SO_TIMESTAMPNS: %ld.%09ld\n", ts->tv_sec, ts->tv_nsec);
+                struct timespec *timestamps_ns = (struct timespec *)CMSG_DATA(cmsg);
+                printf("SW timestamp (ns): %ld.%09ld\n", timestamps_ns[0].tv_sec, timestamps_ns[0].tv_nsec);
+                printf("HW timestamp (ns): %ld.%09ld\n", timestamps_ns[2].tv_sec, timestamps_ns[2].tv_nsec);
             }
         }
-
-#if 0
-        for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
-            printf("Processing cmsg\n");
-            if (cmsg->cmsg_level != SOL_SOCKET)
-                continue;
-
-            switch(cmsg->cmsg_type) {
-                case SO_TIMESTAMPNS:
-                    ts = (struct timespec*) CMSG_DATA(cmsg);
-                    printf("SO_TIMESTAMPNS: %ld.%09ld\n", (long)ts->tv_sec, (long)ts->tv_nsec);
-                    break;
-                case SO_TIMESTAMPING:
-                    ts = (struct timespec*) CMSG_DATA(cmsg);
-                    printf("SO_TIMESTAMPING: %ld.%09ld\n", (long)ts[2].tv_sec, (long)ts[2].tv_nsec);
-                    break;
-                default:
-                    printf("Unhandled cmsg type: %d\n", cmsg->cmsg_type);
-                    break;
-            }
-        }
-#endif
-
-#if 0
-        for( cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg) ) {
-            printf("ok\n");
-            if( cmsg->cmsg_level != SOL_SOCKET )
-            continue;
-
-            switch( cmsg->cmsg_type ) {
-            case SO_TIMESTAMPNS:
-            ts = (struct timespec*) CMSG_DATA(cmsg);
-            printf("HW TIMESTAMP %ld.%09ld\n", (long)ts[2].tv_sec, (long)ts[2].tv_nsec);
-            break;
-            case SO_TIMESTAMPING:
-            ts = (struct timespec*) CMSG_DATA(cmsg);
-            printf("HW TIMESTAMP %ld.%09ld\n", (long)ts[2].tv_sec, (long)ts[2].tv_nsec);
-            break;
-            default:
-            /* Ignore other cmsg options */
-            break;
-            }
-        }
-#endif
 
     } else {
         printf("errno: %i\n", errno);
@@ -246,7 +197,7 @@ int enable_hw_timestamping(int sockfd, const char *interface_name) {
 
 int main()
 {
-    //printf("Openssl Version: %s\n", OpenSSL_version(OPENSSL_VERSION));
+    printf("Openssl Version: %s\n", OpenSSL_version(OPENSSL_VERSION));
 
     signal(SIGSEGV, backtrace_handler);
 
@@ -261,6 +212,7 @@ int main()
     int flags = SOF_TIMESTAMPING_RX_HARDWARE | SOF_TIMESTAMPING_RAW_HARDWARE |
                  SOF_TIMESTAMPING_SYS_HARDWARE | SOF_TIMESTAMPING_SOFTWARE;
     int r = setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPING, &flags, sizeof(flags));
+    int rns = setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMPNS, &flags, sizeof(flags));
 
     // Initialize SSL library
     init_SSL();
@@ -368,38 +320,4 @@ int main()
     printf("  after read\n");
     printf("\n");
     printf("response from the server [%i]:\n%s\n", response_len, response);
-}
-
-int recv_timestamp(int sockfd)
-{
-    struct msghdr msg;
-    int got;
-    got = recvmsg(sockfd, &msg, MSG_PEEK);
-    if (got && errno == EAGAIN)
-    {
-        return 0;
-    }
-    struct timespec *ts;
-    struct cmsghdr *cmsg;
-
-    for (cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg))
-    {
-        if( cmsg->cmsg_level != SOL_SOCKET )
-            continue;
-
-        switch( cmsg->cmsg_type )
-        {
-            case SO_TIMESTAMPNS:
-                ts = (struct timespec*) CMSG_DATA(cmsg);
-                break;
-            case SO_TIMESTAMPING:
-                ts = (struct timespec*) CMSG_DATA(cmsg);
-                break;
-            default:
-                /* Ignore other cmsg options */
-                break;
-        }
-    }
-
-    return got;
 }
